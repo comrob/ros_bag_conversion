@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  ros_dev:
+    build: .
+    container_name: ros_pet_container
+    restart: unless-stopped
+    network_mode: host
+    privileged: true
+    environment:
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+      - TERM=xterm-256color
+      - DISABLE_ROS1_EOL_WARNINGS=1
+    volumes:
+      # 1. REPOS MAPPING
+      # Maps your Host ~/repos to Container ~/repos (/home/dev/repos)
+      - ~/repos:/home/dev/repos
+      - ~/bags:/home/dev/bags
+      # 2. WORKSPACE MAPPING
+      # Maps local ~/docker_ros/catkin_ws to Container ~/catkin_ws (/home/dev/catkin_ws)
+      # This preserves your 'build' and 'devel' folders on the host too.
+      - ./catkin_ws:/home/dev/catkin_ws
+      
+      # GUI Socket
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    
+    command: tail -f /dev/null
