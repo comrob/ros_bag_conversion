@@ -7,12 +7,8 @@
 We provide a demo script that **automatically downloads test bagfiles** and runs the conversion logic for you. + The script opens converted file in [foxglove](https://foxglove.dev/download) if it is installed.
 
 ```bash
-# 1. Build the image
-docker compose build converter
-
-# 2. Run the demo (downloads data -> converts -> verifies)
+# Run the demo (downloads data -> converts -> verifies)
 ./run_demo.sh
-
 ```
 
 *Prefer to test manually? You can download the sample split-bag dataset from [Google Drive here](https://drive.google.com/drive/folders/18X8cS0u-40FkafMt82_sUuik2VwluMv8?usp=drive_link).*
@@ -21,7 +17,6 @@ docker compose build converter
 
 ## TL;DR
 ```
-docker compose build converter
 bash ./install.sh
 
 convert_bag /path/to/ros1_bag_folder --series
@@ -54,12 +49,10 @@ The converter runs as an ephemeral container. It mounts the target data director
 
 ### Installation
 
-Run the provided installation script to build the Docker image and create a symbolic link for the execution wrapper.
+Run the provided installation script to create a symbolic link for the execution wrapper and pull a docker image.
 
 ```bash
-docker compose build converter
 ./install.sh
-
 ```
 
 **Note:** Ensure `~/.local/bin` is in your system `$PATH`. You may need to restart your terminal or source your profile after running the script.
@@ -259,3 +252,12 @@ This section outlines planned improvements to enhance usability and maintainabil
 * **Decoupling:** Split the project into two distinct repositories: one for the minimal "Converter Utility" and one for the heavy "Development Environment" to reduce confusion for users who only need one tool.
 
 </details>
+
+---
+
+## Maintainer Guide
+
+To update the system dependencies (Dockerfile):
+
+1.  **Login:** `echo $GITHUB_TOKEN | docker login ghcr.io -u USER --password-stdin`
+2.  **Publish:** `./publish_image.sh`

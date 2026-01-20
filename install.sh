@@ -9,3 +9,6 @@ if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
     export PATH="$HOME/.local/bin:$PATH"
     echo "Added ~/.local/bin to PATH in .bashrc"
 fi
+
+# pre-pull docker image so that it does not take time on first run
+docker compose -f ~/docker_ros/docker-compose.yml pull converter
