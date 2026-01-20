@@ -1,9 +1,18 @@
-# ROS Bag Conversion and Development Toolkit
+# ROS1 -> ROS2 (mcap) Bag Conversion
+
+![ROS Logo](https://github.com/comrob/github-media/blob/main/img/image.png?raw=true)
+
 
 This repository provides a containerized solution for two primary tasks:
 
-1. **Conversion:** A utility to convert ROS 1 (`.bag`) files to ROS 2 (`.mcap`) format, featuring split-bag support, static TF injection, and metadata generation.
-2. **Development:** A persistent environment for developing, building, and executing ROS 1 (Noetic) packages.
+1. **ROSbags Conversion:** A utility to convert ROS 1 (`.bag`) files to ROS 2 (`.mcap`) format. I enjoy a lot the following features:
+* **Automatic Type Repair:** Migrates custom messages without source code. Automatically fixes ROS1 vs ROS2 incompatibilities (e.g., stripping `seq` from Headers, fixing `CameraInfo` capitalization).
+* **Split-Bag Handling:** Automatically detects split bags and injects `/tf_static` into every chunk. Every output file is self-contained and playable. (e.g., Foxglove or RViz will see the whole TF tree). Generates metadata for seamless playback in ROS 2.
+* **Crash-Safe:** Implements graceful signal handling. Hit `Ctrl+C` anytime, and your MCAP file will still be valid and playable. Useful for testing conversion on small data samples.
+* **Zero Dependencies:** Dockerized solution. No need to install ROS 1, source workspaces, or build custom message packages just to convert data.
+
+
+2. **ROS Noetic Development:** A persistent environment for developing, building, and executing ROS 1 (Noetic) packages.
 
 ## Prerequisites
 
@@ -73,13 +82,62 @@ convert_bag /path/to/data/bag_0.bag /path/to/data/bag_1.bag --series
 
 The script accepts optional arguments passed directly to the internal Python converter:
 
-
 * `--out-dir <path>`: Forces a specific output directory.
-* `--distro <name>`: Sets the ROS distribution name in the metadata (default: `humble`).
+
+<details>
+<summary><strong>Feature: Auto-Generating ROS 2 Message Definitions</strong> (Click to Expand)</summary>
+
+The conversion tool embeds message definitions directly into the `.mcap` file. Modern visualization tools like **Foxglove Studio** read these embedded schemas automatically, meaning you can visualize your custom data immediately without any extra steps.
+
+However, if you want to replay the bag using CLI tools (`ros2 bag play`) or inspect topics (`ros2 topic echo`), your local ROS 2 environment needs the compiled message packages installed.
+
+This repository includes a helper script, `additional/extract_mcap_msgs.py`, to automate this process.
+
+**Why use this?**
+
+* **Context:** Run this in your **target ROS 2 environment** (e.g., your robot or a Humble container), not the converter container.
+* **Function:** It scans an `.mcap` file, detects all message types that are *not* currently installed in your environment, and auto-generates the complete ROS 2 package source code (CMakeLists.txt, package.xml, .msg files) needed to build them.
+
+**Dependencies:**
+
+Install mcap for python in your ROS 2 environment:
+
+```bash
+pip3 install mcap
+# if you use Ubunutu 24.04, you might need to force the global installation
+pip3 install --break-system-packages mcap
+```
+
+**Usage:**
+
+1. **Run the extractor:**
+```bash
+# Run in your ROS 2 environment
+python3 extract_msgs.py /path/to/my_data.mcap --out-dir src/
+
+```
+
+
+2. **Build the packages:**
+```bash
+colcon build
+source install/setup.bash
+
+```
+3. **Check the packages:**
+```bash
+ros2 interface list | grep <YourCustomMessage>
+```
+
+
+Now `ros2 topic echo` will correctly deserialize your custom messages!
+
+</details>
 
 ---
 
-## Part 2: ROS 1 Development Environment
+<details>
+<summary><strong>Part 2: ROS 1 Development Environment</strong> (Click to Expand)</summary>
 
 The `ros_dev` service provides a full ROS Noetic desktop environment with GUI support.
 
@@ -96,21 +154,22 @@ Map your host directories to the container by editing `docker-compose.yml`:
 ### Workflow
 
 1. **Start the Service:**
+
 ```bash
 docker compose up -d ros_dev
 
 ```
 
-
 2. **Access the Shell:**
+
 ```bash
 docker exec -it ros_pet_container bash
 
 ```
 
-
 3. **Build and Run:**
 Inside the container, the user is `dev`. The environment is pre-configured.
+
 ```bash
 cd ~/catkin_ws
 catkin build
@@ -119,15 +178,15 @@ roslaunch my_package my_node.launch
 
 ```
 
-
 4. **GUI Visualization:**
 If your host supports X11 forwarding, you can run GUI tools directly:
+
 ```bash
 rviz
 
 ```
 
-
+</details>
 
 ---
 
@@ -149,6 +208,10 @@ rviz
 
 ---
 
+
+<details>
+<summary><strong>Improvement Proposals</strong> (Click to Expand)</summary>
+
 ## TODO: Future Proposals
 
 This section outlines planned improvements to enhance usability and maintainability.
@@ -167,3 +230,5 @@ This section outlines planned improvements to enhance usability and maintainabil
 ### 3. Architecture
 
 * **Decoupling:** Split the project into two distinct repositories: one for the minimal "Converter Utility" and one for the heavy "Development Environment" to reduce confusion for users who only need one tool.
+
+</details>
