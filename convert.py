@@ -2,8 +2,9 @@ import sys
 import re
 import argparse
 import signal
+import yaml
 from pathlib import Path
-from typing import List, Optional, Any
+from typing import List, Dict, Optional, Any
 import numpy as np
 
 # ROS1 Reader
@@ -159,6 +160,100 @@ def convert_ros1_to_ros2(ros1_obj, ros2_type, ros2_store):
         kwargs[field_name] = val
     return MsgType(**kwargs)
 
+# --- Metadata Logic ---
+
+def write_metadata_yaml(folder: Path, stats_list: List[Dict], distro: str):
+    """
+    Generates rosbag2 compliant metadata.yaml from collected stats.
+    Robust against failures to ensure MCAP files are safe.
+    """
+    try:
+        if not stats_list:
+            return
+
+        print(f"[INFO] Generating metadata.yaml for {len(stats_list)} files...")
+
+        # Aggregation Variables
+        total_messages = 0
+        min_start = None
+        max_end = None
+        
+        # Topic aggregation: {topic_name: {count: int, type: str, serialization: str}}
+        merged_topics = {}
+
+        # Files list for YAML
+        files_data = []
+
+        for s in stats_list:
+            # 1. Aggregate Time
+            if min_start is None or s['start_time'] < min_start:
+                min_start = s['start_time']
+            if max_end is None or s['end_time'] > max_end:
+                max_end = s['end_time']
+            
+            # 2. Aggregate Total Count
+            total_messages += s['message_count']
+
+            # 3. Aggregate Topics
+            for t_name, t_info in s['topics'].items():
+                if t_name not in merged_topics:
+                    merged_topics[t_name] = t_info.copy()
+                else:
+                    merged_topics[t_name]['count'] += t_info['count']
+
+            # 4. Per-File Entry
+            files_data.append({
+                "path": s['filename'],
+                "starting_time": {"nanoseconds_since_epoch": s['start_time']},
+                "duration": {"nanoseconds": s['duration']},
+                "message_count": s['message_count']
+            })
+
+        # Calculate Globals
+        duration_ns = (max_end - min_start) if (max_end and min_start) else 0
+
+        # Format Topics List
+        topics_list = []
+        for t_name, t_data in merged_topics.items():
+            topics_list.append({
+                "topic_metadata": {
+                    "name": t_name,
+                    "type": t_data['type'],
+                    "serialization_format": "cdr",
+                    "offered_qos_profiles": ""  # Simplify for compatibility
+                },
+                "message_count": t_data['count']
+            })
+
+        # Construct YAML Object
+        metadata = {
+            "rosbag2_bagfile_information": {
+                "version": 5,
+                "storage_identifier": "mcap",
+                "ros_distro": distro,
+                "relative_file_paths": [f['path'] for f in files_data],
+                "duration": {"nanoseconds": duration_ns},
+                "starting_time": {"nanoseconds_since_epoch": min_start if min_start else 0},
+                "message_count": total_messages,
+                "topics_with_message_count": topics_list,
+                "compression_format": "",
+                "compression_mode": "",
+                "files": files_data
+            }
+        }
+
+        # Write to File
+        yaml_path = folder / "metadata.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.dump(metadata, f, default_flow_style=False)
+        
+        print(f"[SUCCESS] Metadata written to {yaml_path}")
+
+    except Exception as e:
+        print(f"[ERR] Failed to generate metadata.yaml: {e}")
+        print("[TIP] MCAP files are still valid, but 'ros2 bag info' on the folder might fail.")
+
+
 # --- Business Logic / Series Handling ---
 
 class BagSeriesConverter:
@@ -172,16 +267,24 @@ class BagSeriesConverter:
         self.store_ros2 = get_typestore(Stores.ROS2_HUMBLE)
         self.exiter = GracefulExiter()
 
-    def convert_file(self, src: Path, dst: Path, is_part_of_series: bool = False):
+    def convert_file(self, src: Path, dst: Path, is_part_of_series: bool = False) -> Optional[Dict]:
+        """
+        Returns stats dict if successful, None if failed/empty.
+        Stats: {filename, start_time, end_time, duration, message_count, topics}
+        """
         print(f"[INFO] Processing: {src.name} -> {dst.name}")
         
         tf_type_name = "tf2_msgs/msg/TFMessage"
+        
+        # Stats containers
+        stats_topics = {} # {topic: {count, type}}
+        stats_start = None
+        stats_end = None
+        stats_count = 0
 
         with Reader(src) as reader:
             with open(dst, "wb") as f_out:
                 writer = McapWriter(f_out)
-                
-                # --- ROS2 Profile ---
                 writer.start(profile=Profile.ROS2) 
                 
                 topic_to_chan_id = {}
@@ -235,6 +338,7 @@ class BagSeriesConverter:
                                 metadata=meta
                             )
                             topic_to_chan_id[conn.topic] = cid
+                            stats_topics[conn.topic] = {"count": 0, "type": ros2_type}
 
                         conn_map[conn.id] = topic_to_chan_id[conn.topic]
                         type_map[conn.id] = ros2_type
@@ -268,6 +372,7 @@ class BagSeriesConverter:
                                     metadata=meta
                                 )
                                 topic_to_chan_id[TF_STATIC_TOPIC] = chan_id
+                                stats_topics[TF_STATIC_TOPIC] = {"count": 0, "type": tf_type_name}
                         
                         if chan_id != 0:
                             print(f"  [INFO] Injecting {len(self.static_tf_cache)} static transforms...")
@@ -282,10 +387,16 @@ class BagSeriesConverter:
 
                                 cdr_bytes = self.store_ros2.serialize_cdr(ros2_msg, tf_type_name)
                                 writer.add_message(channel_id=chan_id, log_time=start_time, publish_time=start_time, data=cdr_bytes)
+                                
+                                # Stats Update
+                                stats_topics[TF_STATIC_TOPIC]["count"] += 1
+                                stats_count += 1
+                                if stats_start is None or start_time < stats_start: stats_start = start_time
+                                if stats_end is None or start_time > stats_end: stats_end = start_time
 
                     # --- PASS 2: CONVERSION ---
                     print("  [INFO] Converting messages... (Press Ctrl+C to stop safely)")
-                    count = 0
+                    
                     for conn, timestamp, raw_data in reader.messages():
                         if self.exiter.stop_requested: break
                         if conn.id not in conn_map: continue
@@ -306,17 +417,34 @@ class BagSeriesConverter:
 
                             if conn.topic == TF_STATIC_TOPIC:
                                 self.static_tf_cache.append(ros2_msg)
+                            
+                            # Stats Update
+                            stats_topics[conn.topic]["count"] += 1
+                            stats_count += 1
+                            if stats_start is None or timestamp < stats_start: stats_start = timestamp
+                            if stats_end is None or timestamp > stats_end: stats_end = timestamp
 
-                            count += 1
-                            if count % 10000 == 0: print(f"         {count}...", end='\r')
+                            if stats_count % 10000 == 0: print(f"         {stats_count}...", end='\r')
                         except Exception: pass
 
-                    print(f"\n  [SUCCESS] {count} messages converted.")
+                    print(f"\n  [SUCCESS] {stats_count} messages converted.")
 
                 finally:
-                    # Writer finishes cleanly, generating the footer and index automatically
                     writer.finish()
                     print(f"[INFO] File finalized: {dst}")
+
+        # Return Stats for Aggregation
+        if stats_start is None: stats_start = 0
+        if stats_end is None: stats_end = 0
+        
+        return {
+            "filename": dst.name,
+            "start_time": int(stats_start),
+            "end_time": int(stats_end),
+            "duration": int(stats_end - stats_start),
+            "message_count": stats_count,
+            "topics": stats_topics
+        }
 
 # --- Main Entry Point ---
 
@@ -325,29 +453,21 @@ def main():
     parser.add_argument("inputs", nargs='+', help="Input .bag files or a folder")
     parser.add_argument("--series", action="store_true", help="Treat inputs as a split sequence")
     parser.add_argument("--distro", default="humble", help="ROS distro for metadata")
-    # We keep this argument optional, but usually, we will let the script decide
     parser.add_argument("--out-dir", type=Path, default=None, help="Force a specific output directory")
 
     args = parser.parse_args()
     
     # --- 1. Resolve Inputs ---
-    # We expect inputs to be paths inside the container (e.g. /data/file.bag)
     input_paths = [Path(p) for p in args.inputs]
-    
     bag_files = []
     is_folder_input = False
     
-    # Check if first input is a folder
     if len(input_paths) == 1 and input_paths[0].is_dir():
         is_folder_input = True
         root_folder = input_paths[0]
         bag_files = sorted(list(root_folder.glob("*.bag")))
         print(f"[INFO] Detected folder input: {root_folder} ({len(bag_files)} bags)")
-        # If user passed a folder, force series mode usually, but we respect the flag if they want separate files
-        if args.series:
-            pass 
     else:
-        # List of files
         bag_files = sorted([p for p in input_paths if p.suffix == ".bag"])
 
     if not bag_files:
@@ -357,56 +477,51 @@ def main():
     print(f"[INFO] Processing {len(bag_files)} files. Series Mode: {args.series}")
     
     # --- 2. Determine Output Directory ---
-    # The logic you requested is implemented here
-    
     output_dir = args.out_dir
     
     if output_dir is None:
         first_file = bag_files[0]
-        
         if args.series:
-            # Logic: Series Mode -> Create a specific folder
             if is_folder_input:
-                # Rule: <folder_name>_mcap
-                # Note: first_file.parent is the input folder
                 parent_name = first_file.parent.name
-                # We go one level up to create the sibling folder
                 output_dir = first_file.parent.parent / f"{parent_name}_mcap"
             else:
-                # Rule: <first_file_name>_series_mcap
                 stem = first_file.stem
-                # Create folder in the same dir as the files
                 output_dir = first_file.parent / f"{stem}_series_mcap"
-            
             print(f"[INFO] Output Directory: {output_dir}")
             output_dir.mkdir(parents=True, exist_ok=True)
-            
         else:
-            # Logic: Non-Series -> Output next to original file
-            # We don't need a single output dir, we calculate per file
             output_dir = None
 
     # --- 3. Execution ---
     converter = BagSeriesConverter(ros_distro=args.distro)
     
+    # Store stats for valid files to generate metadata later
+    valid_stats = []
+
     for f in bag_files:
         if converter.exiter.stop_requested:
             print("[INFO] Batch processing stopped.")
             break
 
-        # Calculate destination filename
         if output_dir:
-            # Series mode (or forced output dir): File goes into the output_dir
             dst = output_dir / f.with_suffix(".mcap").name
         else:
-            # Standard mode: File goes next to input
             dst = f.with_suffix(".mcap")
 
-        converter.convert_file(f, dst, is_part_of_series=args.series)
+        # Convert and capture stats
+        stats = converter.convert_file(f, dst, is_part_of_series=args.series)
+        if stats:
+            valid_stats.append(stats)
         
         if not args.series:
             converter.static_tf_cache.clear()
             converter.tf_static_def = None
+
+    # --- 4. Generate Metadata (If Series/Folder Output) ---
+    # Only generate if we have an output directory (implies series/folder mode)
+    if output_dir and valid_stats:
+        write_metadata_yaml(output_dir, valid_stats, args.distro)
 
 if __name__ == "__main__":
     main()
