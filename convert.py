@@ -321,47 +321,89 @@ class BagSeriesConverter:
 # --- Main Entry Point ---
 
 def main():
-    parser = argparse.ArgumentParser(description="Convert ROS1 bags to MCAP with split support.")
+    parser = argparse.ArgumentParser(description="Convert ROS1 bags to MCAP.")
     parser.add_argument("inputs", nargs='+', help="Input .bag files or a folder")
-    parser.add_argument("--series", action="store_true", help="Treat inputs as a split sequence (share static TFs)")
-    parser.add_argument("--distro", default="humble", help="ROS distro name to inject in metadata (default: humble)")
-    parser.add_argument("--out-dir", type=Path, default=None, help="Output directory (default: same as input)")
+    parser.add_argument("--series", action="store_true", help="Treat inputs as a split sequence")
+    parser.add_argument("--distro", default="humble", help="ROS distro for metadata")
+    # We keep this argument optional, but usually, we will let the script decide
+    parser.add_argument("--out-dir", type=Path, default=None, help="Force a specific output directory")
 
     args = parser.parse_args()
     
-    files = []
-    for inp in args.inputs:
-        p = Path(inp)
-        if p.is_dir():
-            bag_files = sorted([f for f in p.glob("*.bag")])
-            files.extend(bag_files)
-            args.series = True 
-        elif p.suffix == ".bag":
-            files.append(p)
+    # --- 1. Resolve Inputs ---
+    # We expect inputs to be paths inside the container (e.g. /data/file.bag)
+    input_paths = [Path(p) for p in args.inputs]
+    
+    bag_files = []
+    is_folder_input = False
+    
+    # Check if first input is a folder
+    if len(input_paths) == 1 and input_paths[0].is_dir():
+        is_folder_input = True
+        root_folder = input_paths[0]
+        bag_files = sorted(list(root_folder.glob("*.bag")))
+        print(f"[INFO] Detected folder input: {root_folder} ({len(bag_files)} bags)")
+        # If user passed a folder, force series mode usually, but we respect the flag if they want separate files
+        if args.series:
+            pass 
+    else:
+        # List of files
+        bag_files = sorted([p for p in input_paths if p.suffix == ".bag"])
 
-    if not files:
+    if not bag_files:
         print("[ERR] No .bag files found.")
         sys.exit(1)
 
-    print(f"[INFO] Found {len(files)} files. Series Mode: {args.series}")
+    print(f"[INFO] Processing {len(bag_files)} files. Series Mode: {args.series}")
     
+    # --- 2. Determine Output Directory ---
+    # The logic you requested is implemented here
+    
+    output_dir = args.out_dir
+    
+    if output_dir is None:
+        first_file = bag_files[0]
+        
+        if args.series:
+            # Logic: Series Mode -> Create a specific folder
+            if is_folder_input:
+                # Rule: <folder_name>_mcap
+                # Note: first_file.parent is the input folder
+                parent_name = first_file.parent.name
+                # We go one level up to create the sibling folder
+                output_dir = first_file.parent.parent / f"{parent_name}_mcap"
+            else:
+                # Rule: <first_file_name>_series_mcap
+                stem = first_file.stem
+                # Create folder in the same dir as the files
+                output_dir = first_file.parent / f"{stem}_series_mcap"
+            
+            print(f"[INFO] Output Directory: {output_dir}")
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+        else:
+            # Logic: Non-Series -> Output next to original file
+            # We don't need a single output dir, we calculate per file
+            output_dir = None
+
+    # --- 3. Execution ---
     converter = BagSeriesConverter(ros_distro=args.distro)
     
-    for f in files:
+    for f in bag_files:
         if converter.exiter.stop_requested:
-            print("[INFO] Batch processing stopped by user.")
+            print("[INFO] Batch processing stopped.")
             break
 
-        out_name = f.with_suffix(".mcap").name
-        if args.out_dir:
-            args.out_dir.mkdir(parents=True, exist_ok=True)
-            dst = args.out_dir / out_name
+        # Calculate destination filename
+        if output_dir:
+            # Series mode (or forced output dir): File goes into the output_dir
+            dst = output_dir / f.with_suffix(".mcap").name
         else:
+            # Standard mode: File goes next to input
             dst = f.with_suffix(".mcap")
 
         converter.convert_file(f, dst, is_part_of_series=args.series)
         
-        # Reset cache if not in series mode
         if not args.series:
             converter.static_tf_cache.clear()
             converter.tf_static_def = None

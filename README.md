@@ -47,8 +47,6 @@ convert_bag /path/to/recording_folder --series
 The script passes flags directly to the internal Python converter:
 
 ```bash
-# Specify target ROS 2 distro for metadata
-convert_bag my.bag --distro iron
 
 # Convert specific files in the current folder
 convert_bag bag1.bag bag2.bag --series

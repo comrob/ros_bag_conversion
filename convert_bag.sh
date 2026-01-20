@@ -2,62 +2,62 @@
 
 # Usage Check
 if [ -z "$1" ]; then
-    echo "Usage: ./convert_bag.sh <input_path> [options]"
-    echo "Examples:"
-    echo "  Folder (Series): ./convert_bag.sh /path/to/bags --series"
-    echo "  Single File:     ./convert_bag.sh /path/to/my.bag"
+    echo "Usage: convert_bag <input_path> [options]"
     exit 1
 fi
 
-# 1. Analyze Input Path
-INPUT_PATH="$1"
-ABS_PATH=$(realpath "$INPUT_PATH")
+SCRIPT_DIR="$(dirname "$(realpath "$0")")"
 
-if [ -d "$ABS_PATH" ]; then
-    # CASE A: Input is a Directory
-    MOUNT_HOST="$ABS_PATH"
-    # Inside container, we point to the mount root
-    CONTAINER_ARG="/data"
-    echo "[HOST] Detected Folder Input"
-else
-    # CASE B: Input is a File
-    MOUNT_HOST=$(dirname "$ABS_PATH")
-    FILENAME=$(basename "$ABS_PATH")
-    # Inside container, we point to the specific file
-    CONTAINER_ARG="/data/$FILENAME"
-    echo "[HOST] Detected File Input"
-fi
+# --- 1. Safety Check: Verify all files are in the same folder ---
+# We take the directory of the first argument as the reference.
+REF_DIR=$(dirname "$(realpath "$1")")
 
-echo "[HOST] Mounting: $MOUNT_HOST -> /data"
-
-# 2. Build Python Arguments
-# We reconstruct the argument list to pass to the Python script.
-# - The first arg ($1) is replaced by our calculated CONTAINER_ARG.
-# - All subsequent args are checked:
-#   - If they look like flags (--series), keep them as-is.
-#   - If they look like extra files, assume they are in the same folder and rewrite path.
-
-PY_ARGS="$CONTAINER_ARG"
-shift # Skip the first argument since we handled it
-
-for arg in "$@"
-do
-    if [[ "$arg" == -* ]]; then
-        # It's a flag (e.g. --series, --distro)
-        PY_ARGS="$PY_ARGS $arg"
+for arg in "$@"; do
+    # Skip flags
+    if [[ "$arg" == -* ]]; then continue; fi
+    
+    # Get absolute path of current arg
+    CUR_PATH=$(realpath "$arg")
+    
+    # If it's a directory, we check its parent (because the dir itself is the input)
+    if [ -d "$CUR_PATH" ]; then
+        CUR_DIR=$(dirname "$CUR_PATH")
     else
-        # It's another file. We assume it lives in the same mounted directory.
-        FNAME=$(basename "$arg")
-        PY_ARGS="$PY_ARGS /data/$FNAME"
+        CUR_DIR=$(dirname "$CUR_PATH")
+    fi
+
+    # Compare against reference
+    if [ "$CUR_DIR" != "$REF_DIR" ]; then
+        echo "[HOST][ERROR] All input files must be in the same directory."
+        echo "[HOST]  Reference: $REF_DIR"
+        echo "[HOST]  Mismatch:  $CUR_DIR ($arg)"
+        exit 1
     fi
 done
 
-echo "[CMD] Running: python3 convert.py $PY_ARGS"
-echo "----------------------------------------"
+# --- 2. Prepare Docker Mounts ---
+# We mount the directory containing the inputs to /data
+HOST_MOUNT_DIR="$REF_DIR"
+echo "[HOST] [INFO] Mounting Host: $HOST_MOUNT_DIR -> Container: /data"
 
-# 3. Run Container
-docker run --rm -it \
-  -v "$MOUNT_HOST":/data \
-  --user $(id -u):$(id -g) \
-  ros_bag_converter:latest \
-  python3 /home/dev/convert.py $PY_ARGS
+# --- 3. Build Python Arguments ---
+# We convert host paths to container paths (relative to /data)
+PY_ARGS=""
+
+for arg in "$@"; do
+    if [[ "$arg" == -* ]]; then
+        # Pass flags through
+        PY_ARGS="$PY_ARGS $arg"
+    else
+        # Just take the filename (or folder name)
+        NAME=$(basename "$arg")
+        PY_ARGS="$PY_ARGS /data/$NAME"
+    fi
+done
+
+# --- 4. Run Docker ---
+HOST_DATA_DIR="$HOST_MOUNT_DIR" \
+CURRENT_UID=$(id -u) \
+CURRENT_GID=$(id -g) \
+docker compose -f "$SCRIPT_DIR/docker-compose.yml" run --rm converter \
+    python3 /home/dev/convert.py $PY_ARGS
