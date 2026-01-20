@@ -182,122 +182,120 @@ def convert_bag(src: Path, dst: Path):
             writer = McapWriter(f_out)
             writer.start()
 
-            print("[INFO] Registering schemas and channels...")
-            
-            topic_to_chan_id = {}
-            conn_map = {}
-            type_map = {}
-            registered_schemas = {} 
-
-            # --- PASS 1: REGISTRATION ---
-            for conn in reader.connections:
-                msg_def = None
-                if hasattr(conn, 'msgdef'): msg_def = conn.msgdef
-                elif hasattr(conn, 'ext'):
-                    if isinstance(conn.ext, dict): msg_def = conn.ext.get('message_definition', None)
-                    elif hasattr(conn.ext, 'message_definition'): msg_def = conn.ext.message_definition
+            # Wrap the entire process in a Try/Except block to catch the first Ctrl+C
+            try:
+                print("[INFO] Registering schemas and channels...")
                 
-                if not msg_def and conn.msgtype in reader.msgtypes:
-                    msg_def = reader.msgtypes[conn.msgtype]
-                
-                if not msg_def:
-                    print(f"[WARN] No definition for {conn.topic}. Skipping.")
-                    continue
+                topic_to_chan_id = {}
+                conn_map = {}
+                type_map = {}
+                registered_schemas = {} 
 
-                ros1_type = conn.msgtype
-                ros2_type = to_ros2_type(ros1_type)
-                
-                # A. Register in ROS1 Store (Critical for Deserialization)
-                try:
-                    types_v1 = get_types_from_msg(msg_def, ros1_type)
-                    store_ros1.register(types_v1)
-                except Exception:
-                    pass # Often fails for standard types, usually safe to ignore
-
-                # B. Fix and Register in ROS2 Store (Critical for Serialization)
-                fixed_def = fix_ros1_def(msg_def, ros2_type)
-
-                try:
-                    types_v2 = get_types_from_msg(fixed_def, ros2_type)
-                    # FORCE REGISTER: Even if it exists, we register to ensure custom types (tf2_msgs) are present
-                    store_ros2.register(types_v2)
-                except Exception as e:
-                    print(f"[ERR] Failed to register type {ros2_type}: {e}")
-
-                # C. Register Schema in MCAP
-                if ros2_type not in registered_schemas:
-                    try:
-                        schema_id = writer.register_schema(
-                            name=ros2_type,
-                            encoding=SchemaEncoding.ROS2, 
-                            data=fixed_def.encode('utf-8')
-                        )
-                        registered_schemas[ros2_type] = schema_id
-                    except Exception as e:
-                        print(f"[ERR] MCAP Schema error {ros2_type}: {e}")
-                        continue
-                else:
-                    schema_id = registered_schemas[ros2_type]
-
-                # D. Register Channel
-                if conn.topic not in topic_to_chan_id:
-                    metadata = {}
-                    qos_profile = get_qos_profile(conn.topic)
-                    if qos_profile:
-                        metadata["offered_qos_profiles"] = qos_profile
-
-                    chan_id = writer.register_channel(
-                        topic=conn.topic,
-                        message_encoding=MessageEncoding.CDR,
-                        schema_id=schema_id,
-                        metadata=metadata
-                    )
-                    topic_to_chan_id[conn.topic] = chan_id
-                
-                conn_map[conn.id] = topic_to_chan_id[conn.topic]
-                type_map[conn.id] = ros2_type
-
-            # --- PASS 2: CONVERSION ---
-            print("[INFO] Converting messages...")
-            count = 0
-            
-            for conn, timestamp, raw_data in reader.messages():
-                if conn.id not in conn_map: continue
-                
-                try:
-                    ros2_typename = type_map[conn.id]
-                    ros1_typename = conn.msgtype
-                    chan_id = conn_map[conn.id]
-
-                    # 1. Deserialize (ROS1)
-                    # We use store_ros1 which now definitely has the type
-                    ros1_msg = store_ros1.deserialize_ros1(raw_data, ros1_typename)
-
-                    # 2. Convert Object
-                    ros2_msg = convert_ros1_to_ros2(ros1_msg, ros2_typename, store_ros2)
-
-                    # 3. Serialize (CDR)
-                    # We use store_ros2 which now definitely has the type
-                    cdr_bytes = store_ros2.serialize_cdr(ros2_msg, ros2_typename)
-
-                    # 4. Write
-                    writer.add_message(
-                        channel_id=chan_id,
-                        log_time=timestamp,
-                        publish_time=timestamp,
-                        data=cdr_bytes
-                    )
+                # --- PASS 1: REGISTRATION ---
+                for conn in reader.connections:
+                    msg_def = None
+                    if hasattr(conn, 'msgdef'): msg_def = conn.msgdef
+                    elif hasattr(conn, 'ext'):
+                        if isinstance(conn.ext, dict): msg_def = conn.ext.get('message_definition', None)
+                        elif hasattr(conn.ext, 'message_definition'): msg_def = conn.ext.message_definition
                     
-                    count += 1
-                    if count % 5000 == 0: print(f"       {count}...", end='\r')
+                    if not msg_def and conn.msgtype in reader.msgtypes:
+                        msg_def = reader.msgtypes[conn.msgtype]
+                    
+                    if not msg_def:
+                        continue
 
-                except Exception as e:
-                    # Uncomment to debug single failures
-                    # print(f"[ERR] {conn.topic}: {e}")
-                    pass
+                    ros1_type = conn.msgtype
+                    ros2_type = to_ros2_type(ros1_type)
+                    
+                    # A. Register in ROS1 Store
+                    try:
+                        types_v1 = get_types_from_msg(msg_def, ros1_type)
+                        store_ros1.register(types_v1)
+                    except Exception:
+                        pass 
 
-            writer.finish()
-            print(f"\n[SUCCESS] Processed {count} messages. Output: {dst}")
+                    # B. Fix and Register in ROS2 Store
+                    fixed_def = fix_ros1_def(msg_def, ros2_type)
+                    try:
+                        types_v2 = get_types_from_msg(fixed_def, ros2_type)
+                        store_ros2.register(types_v2)
+                    except Exception as e:
+                        print(f"[ERR] Failed to register type {ros2_type}: {e}")
+
+                    # C. Register Schema in MCAP
+                    if ros2_type not in registered_schemas:
+                        try:
+                            schema_id = writer.register_schema(
+                                name=ros2_type,
+                                encoding=SchemaEncoding.ROS2, 
+                                data=fixed_def.encode('utf-8')
+                            )
+                            registered_schemas[ros2_type] = schema_id
+                        except Exception as e:
+                            print(f"[ERR] MCAP Schema error {ros2_type}: {e}")
+                            continue
+                    else:
+                        schema_id = registered_schemas[ros2_type]
+
+                    # D. Register Channel
+                    if conn.topic not in topic_to_chan_id:
+                        metadata = {}
+                        qos_profile = get_qos_profile(conn.topic)
+                        if qos_profile:
+                            metadata["offered_qos_profiles"] = qos_profile
+
+                        chan_id = writer.register_channel(
+                            topic=conn.topic,
+                            message_encoding=MessageEncoding.CDR,
+                            schema_id=schema_id,
+                            metadata=metadata
+                        )
+                        topic_to_chan_id[conn.topic] = chan_id
+                    
+                    conn_map[conn.id] = topic_to_chan_id[conn.topic]
+                    type_map[conn.id] = ros2_type
+
+                # --- PASS 2: CONVERSION ---
+                print("[INFO] Converting messages... (Press Ctrl+C to stop early)")
+                count = 0
+                
+                for conn, timestamp, raw_data in reader.messages():
+                    if conn.id not in conn_map: continue
+                    
+                    try:
+                        ros2_typename = type_map[conn.id]
+                        ros1_typename = conn.msgtype
+                        chan_id = conn_map[conn.id]
+
+                        ros1_msg = store_ros1.deserialize_ros1(raw_data, ros1_typename)
+                        ros2_msg = convert_ros1_to_ros2(ros1_msg, ros2_typename, store_ros2)
+                        cdr_bytes = store_ros2.serialize_cdr(ros2_msg, ros2_typename)
+
+                        writer.add_message(
+                            channel_id=chan_id,
+                            log_time=timestamp,
+                            publish_time=timestamp,
+                            data=cdr_bytes
+                        )
+                        
+                        count += 1
+                        if count % 5000 == 0: print(f"       {count}...", end='\r')
+
+                    except Exception as e:
+                        pass
+                
+                print(f"\n[SUCCESS] Completed. Processed {count} messages.")
+
+            except KeyboardInterrupt:
+                # 1st Ctrl+C lands here
+                print(f"\n[WARN] Interrupted by user! Finalizing MCAP file safely...")
+                print(f"[TIP]  Press Ctrl+C AGAIN to hard-stop immediately (may corrupt file).")
+            
+            finally:
+                # 2nd Ctrl+C (during this step) will crash the script naturally
+                writer.finish()
+                print(f"[INFO] File finalized: {dst}")
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
