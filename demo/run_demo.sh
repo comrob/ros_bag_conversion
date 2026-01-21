@@ -144,9 +144,33 @@ echo "Instructions:"
 echo "1. Import layout: '$SCRIPT_DIR/$DATA_DIR/$LAYOUT_FILE'"
 echo "2. Drag the folder '$SCRIPT_DIR/$OUT_FOLDER' into Foxglove."
 
+
+# ==============================================================================
+# STEP 7: TEST CASE: Splitting by Size
+# ==============================================================================
+print_header "STEP 7: Testing Split Size (Limit 50MB)" # CHANGED from 200MB
+
+OUT_SPLIT="$DATA_DIR/output_split"
+echo "[INFO] Target Output: $OUT_SPLIT"
+
+# Clean up previous failed run if exists
+rm -rf "$OUT_SPLIT"
+
+set -x
+$CONVERTER_SCRIPT "$DATA_DIR/test_0.bag" --out-dir "$OUT_SPLIT" --split-size 50M
+set +x
+
+if [ -f "$OUT_SPLIT/test_0.mcap" ] && [ -f "$OUT_SPLIT/test_0_1.mcap" ]; then
+    echo "✅ Split conversion successful."
+    ls -lh "$OUT_SPLIT"
+else
+    echo "❌ Failed. Split files missing in: $OUT_SPLIT"
+    exit 1
+fi
+
 if command -v foxglove-studio &> /dev/null; then
     # Open the first file to trigger the app, but drag-and-drop folder is best for sequence
-    foxglove-studio "$OUT_FOLDER/test_0.mcap" &
+    foxglove-studio "$OUT_FOLDER/test_1.mcap" &
 else
     echo "[INFO] Foxglove not found in PATH. Please open manually."
 fi

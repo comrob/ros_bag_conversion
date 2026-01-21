@@ -1,1 +1,3 @@
 catkin_ws/src/*
+**/__pycache__/
+**/*.pyc

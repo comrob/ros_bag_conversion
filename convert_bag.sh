@@ -1,61 +1,57 @@
 #!/bin/bash
 
-# Find where this script and docker-compose.yml are located
+# Configuration
 SCRIPT_DIR="$(dirname "$(realpath "$0")")"
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
+SRC_DIR="$SCRIPT_DIR/src"
 
-# Usage Check
+# Check Usage
 if [ -z "$1" ]; then
     echo "Usage: convert_bag <file_or_folder> [options]"
     exit 1
 fi
 
-# 1. Determine Mount Point (HOST_DATA_DIR)
-# We find the absolute path of the input to determine the parent folder.
+# 1. Determine Mount Point (The 'Stage')
 FIRST_ARG_ABS=$(realpath "$1")
-
 if [ -d "$FIRST_ARG_ABS" ]; then
-    # Input is a folder
-    MOUNT_HOST=$(dirname "$FIRST_ARG_ABS")
+    MOUNT_HOST="$FIRST_ARG_ABS"
 else
-    # Input is a file
     MOUNT_HOST=$(dirname "$FIRST_ARG_ABS")
 fi
 
-# 2. Construct Python Arguments
-# We rewrite the host arguments to be relative to the container's /data
+# 2. Construct Arguments
 PY_ARGS=""
-for var in "$@"
-do
+for var in "$@"; do
+    # Skip flags (starts with -)
     if [[ "$var" == -* ]]; then
-        # Pass flags (e.g. --series) directly
         PY_ARGS="$PY_ARGS $var"
+        continue
+    fi
+
+    # Check mapping for anything that isn't a flag
+    # realpath -m resolves paths even if they don't exist (e.g. output dirs)
+    ABS_VAR=$(realpath -m "$var")
+    
+    # If the path (existing or theoretical) lies within our mount point...
+    if [[ "$ABS_VAR" == "$MOUNT_HOST"* ]]; then
+            # ...pass it as a relative path to Python
+            REL_PATH=$(realpath -m --relative-to="$MOUNT_HOST" "$ABS_VAR")
+            PY_ARGS="$PY_ARGS $REL_PATH"
     else
-        ABS_VAR=$(realpath "$var")
-        # Check if the file is actually inside our calculated mount
-        if [[ "$ABS_VAR" == "$MOUNT_HOST"* ]]; then
-             # Remove the host prefix and prepend /data
-             # e.g. /home/user/data/bag.bag -> /data/bag.bag
-             REL_PATH="${ABS_VAR#$MOUNT_HOST}"
-             PY_ARGS="$PY_ARGS /data${REL_PATH}"
-        else
-             echo "[WARN] Argument $var is outside the mounted directory ($MOUNT_HOST). It will be invisible to the container."
-        fi
+            # ...otherwise pass it raw (e.g. "200M", "humble")
+            PY_ARGS="$PY_ARGS $var"
     fi
 done
 
-# 3. Run Docker Compose
-# We pass the calculated directory and user ID as environment variables.
-# docker compose will substitute ${HOST_DATA_DIR}, ${CURRENT_UID}, etc.
-
-echo "[HOST] Mounting: $MOUNT_HOST"
+# 3. Run
+echo "[HOST] Mounting Data:   $MOUNT_HOST"
+echo "[HOST] Working Dir:     /data"
 
 export HOST_DATA_DIR="$MOUNT_HOST"
 export CURRENT_UID=$(id -u)
 export CURRENT_GID=$(id -g)
 
-# --rm: Clean up container after run
-# converter: The service name in docker-compose.yml
-# python3 ...: The command to override the default
-docker compose -f "$COMPOSE_FILE" run --rm converter \
-    python3 /home/dev/convert.py $PY_ARGS
+docker compose -f "$COMPOSE_FILE" run --rm \
+    -w /data \
+    converter \
+    python3 /home/dev/src/convert.py $PY_ARGS
