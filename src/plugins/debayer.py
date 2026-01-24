@@ -4,7 +4,7 @@ from typing import Any, Tuple
 from plugin_manager import BasePlugin
 
 class DebayerPlugin(BasePlugin):
-    def process(self, topic: str, msg: Any, msg_type: str) -> Tuple[Any, bool]:
+    def process(self, topic: str, msg: Any, msg_type: str, timestamp: int) -> Tuple[Any, bool]:
         # 1. Filter
         if "camera_front" not in topic or "CompressedImage" not in msg_type:
             return msg, False  # <--- NOT MODIFIED

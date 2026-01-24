@@ -5,7 +5,7 @@ from typing import Any
 from plugin_manager import BasePlugin
 
 class DebayerDebugPlugin(BasePlugin):
-    def process(self, topic: str, msg: Any, msg_type: str) -> Any:
+    def process(self, topic: str, msg: Any, msg_type: str, timestamp: int) -> Any:
         # 1. Filter: Run only on Front Camera Compressed Images
         if "camera_front" not in topic or "CompressedImage" not in msg_type:
             return msg

@@ -2,4 +2,5 @@
 active_plugins:
   # - DebayerDebugPlugin
   - DebayerPlugin
+  - RobustelFixPlugin
   # - CircleDrawerPlugin  <-- You can comment this out to disable it

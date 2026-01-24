@@ -213,7 +213,7 @@ class BagSeriesConverter:
                             ros1_msg = self.store_ros1.deserialize_ros1(raw_data, conn.msgtype)
                             ros2_msg = convert_utils.convert_ros1_to_ros2(ros1_msg, ros2_t, self.store_ros2)
                             
-                            ros2_msg = self.plugin_manager.run_plugins(conn.topic, ros2_msg, ros2_t)
+                            ros2_msg = self.plugin_manager.run_plugins(conn.topic, ros2_msg, ros2_t, timestamp)
                             if ros2_msg is None: continue
                             
                             cdr_bytes = self.store_ros2.serialize_cdr(ros2_msg, ros2_t)

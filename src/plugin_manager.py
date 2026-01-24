@@ -7,11 +7,11 @@ from typing import Any, List, Dict, Tuple, Set
 
 class BasePlugin:
     """Interface that all plugins must inherit from."""
-    def process(self, topic: str, msg: Any, msg_type: str) -> Tuple[Any, bool]:
+    # CHANGED: Added timestamp argument
+    def process(self, topic: str, msg: Any, msg_type: str, timestamp: int) -> Tuple[Any, bool]: 
         """
         Must return a tuple: (message, was_modified)
-        - message: The (potentially) modified message object.
-        - was_modified: True if the plugin actually changed the data.
+        timestamp: The message timestamp in nanoseconds (from the bag file).
         """
         return msg, False
 
@@ -70,13 +70,13 @@ class PluginManager:
         except Exception as e:
             print(f"[PLUGIN] [ERR] Error reading config: {e}")
 
-    def run_plugins(self, topic: str, msg: Any, msg_type: str) -> Any:
+    def run_plugins(self, topic: str, msg: Any, msg_type: str, timestamp: int) -> Any:
         current_msg = msg
         for plugin in self.active_plugins:
             if current_msg is None: break 
             try:
                 # Execute plugin
-                current_msg, modified = plugin.process(topic, current_msg, msg_type)
+                current_msg, modified = plugin.process(topic, current_msg, msg_type, timestamp)
                 
                 # Vocal Reporting (Deduplicated)
                 if modified:
