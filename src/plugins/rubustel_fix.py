@@ -1,35 +1,44 @@
 import sys
 import re
 import json
-from typing import Any, Tuple
+from typing import Any, List, Tuple, Optional
+
+# Import ROS2 String type
+from rosbags.typesys.stores.ros2_humble import std_msgs__msg__String as StringMsg
 from plugin_manager import BasePlugin
 
 class RobustelFixPlugin(BasePlugin):
-    # Updated signature to match BasePlugin
-    def process(self, topic: str, msg: Any, msg_type: str, timestamp: int) -> Tuple[Any, bool]:
+    def process(self, topic: str, msg: Any, msg_type: str, timestamp: int) -> Tuple[List[Tuple[str, Any, str, Optional[str]]], bool]:
         
-        # 1. Filter
-        if "robustel" not in topic:
-            return msg, False
+        # Default: Keep original message
+        emissions = [(topic, msg, msg_type, None)]
+
+        # 1. Filter using config (default to "robustel")
+        filter_str = self.config.get('input_filter', 'robustel')
+        if filter_str not in topic:
+            return emissions, False
 
         try:
-            # 2. Extract Raw Text 
+            # 2. Extract Raw Text (Handle Bad Bytes)
             raw_text = ""
             if hasattr(msg, 'data'):
-                if isinstance(msg.data, str): raw_text = msg.data
-                elif isinstance(msg.data, bytes): raw_text = msg.data.decode('utf-8', errors='ignore')
-                else: raw_text = str(msg)
+                if isinstance(msg.data, str):
+                    raw_text = msg.data
+                elif isinstance(msg.data, bytes):
+                    raw_text = msg.data.decode('utf-8', errors='ignore')
+                else:
+                    raw_text = str(msg)
             else:
                 raw_text = str(msg)
 
-            # 3. Parse fields
+            # 3. Parse fields using Regex
             parsed_data = {}
             patterns = {
                 "rsrp_value": r"rsrp_value\s*=\s*([-+]?\d+(?:\.\d+)?)",
                 "network_type": r"network_type\s*=\s*(\w+)",
                 "cell_id": r"cell_id\s*=\s*(\d+)",
                 "band": r"band\s*=\s*(\d+)",
-                "sinr_value": r"sinr_value\s*=\s*([-+]?\d+(?:\.\d+)?)", # Added useful signal stats
+                "sinr_value": r"sinr_value\s*=\s*([-+]?\d+(?:\.\d+)?)",
                 "rsrq_value": r"rsrq_value\s*=\s*([-+]?\d+(?:\.\d+)?)"
             }
 
@@ -44,24 +53,23 @@ class RobustelFixPlugin(BasePlugin):
                     found_any = True
 
             if found_any:
-                # 4. INJECT TIMESTAMP (The new feature)
-                # 'timestamp' is in nanoseconds (int). 
-                # We add a float version for easy Python usage later.
+                # 4. Inject Metadata
                 parsed_data['timestamp_ns'] = timestamp
-                parsed_data['timestamp'] = timestamp / 1e9 
+                parsed_data['timestamp'] = timestamp / 1e9
 
-                # 5. Overwrite
-                json_output = json.dumps(parsed_data)
+                # 5. Create New Message
+                json_str = json.dumps(parsed_data)
+                new_msg = StringMsg(data=json_str)
                 
-                if hasattr(msg, 'data'):
-                    msg.data = json_output
-
-                # Remove the debug print/exit once you are confident
-                # print(f"[DEBUG] JSON with Time: {json_output}")
+                # 6. Add to emissions
+                out_topic = self.config.get('output_topic', '/robustel/parsed')
                 
-                return msg, True
+                # Append new tuple: (Topic, Msg, Type, DefinitionOverride=None)
+                emissions.append((out_topic, new_msg, "std_msgs/msg/String", None))
+                
+                return emissions, True
 
         except Exception as e:
-            print(f"[PLUGIN ERR] Robustel p failed: {e}")
+            print(f"[PLUGIN ERR] Robustel parse failed: {e}")
 
-        return msg, False
+        return emissions, False

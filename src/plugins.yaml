@@ -1,6 +1,24 @@
-# plugins.yaml
-active_plugins:
-  # - DebayerDebugPlugin
-  - DebayerPlugin
-  - RobustelFixPlugin
-  # - CircleDrawerPlugin  <-- You can comment this out to disable it
+plugins:
+  # -------------------------------------------------------------------
+  # 1. Robustel Fixer
+  # Parses the messy string, injects timestamp, and creates a clean topic.
+  # -------------------------------------------------------------------
+  RobustelFixPlugin:
+    input_filter: "robustel"
+    output_topic: "/robustel/parsed"
+
+  # -------------------------------------------------------------------
+  # 2. Debayering (Front Camera)
+  # Decompresses, Debayers (fixes colors), and Re-compresses to JPEG.
+  # -------------------------------------------------------------------
+  DebayerPlugin:
+    target_topic: "camera_front"
+    jpeg_quality: 95   # Lower this if you want smaller files (e.g. 80)
+
+  # -------------------------------------------------------------------
+  # 3. Debugging (Optional)
+  # Uncomment this to run the debug plugin which exits after 1 message.
+  # -------------------------------------------------------------------
+  # DebayerDebugPlugin:
+  #   target_topic: "camera_front"
+  #   jpeg_quality: 95
