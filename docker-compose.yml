@@ -16,6 +16,7 @@ services:
       - ~/bag:/home/dev/bags
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - ./demo:/home/dev/demo
+      - /media:/media:rw
     command: tail -f /dev/null
 
   converter:
