@@ -21,6 +21,20 @@ TF_STATIC_QOS_POLICY = """
   avoid_ros_namespace_conventions: false
 """.strip()
 
+class NoOpContextManager:
+    """
+    A dummy context manager that mimics tqdm but does nothing.
+    Used when the bag file is empty or has invalid duration to prevent crashes.
+    """
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        pass
+
+    def update(self, n=1):
+        pass
+
 # --- Reporting / Metadata Utils ---
 
 def write_metadata_yaml(folder: Path, stats_list: List[Dict], distro: str):

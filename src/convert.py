@@ -17,7 +17,7 @@ from mcap.well_known import SchemaEncoding, MessageEncoding, Profile
 import convert_utils
 import writer as mcap_writer_utils
 from plugin_manager import PluginManager
-from std_defs import get_std_def  # <--- Import Standard Registry
+from std_defs import get_std_def
 
 # --- Business Logic ---
 class BagSeriesConverter:
@@ -67,7 +67,7 @@ class BagSeriesConverter:
             registered_schemas = {}
             
             try:
-                # --- PASS 1: PRE-REGISTRATION (Same as original) ---
+                # --- PASS 1: PRE-REGISTRATION ---
                 for conn in reader.connections:
                     if self.exiter.stop_requested: break
 
@@ -132,7 +132,7 @@ class BagSeriesConverter:
                     conn_map[conn.id] = topic_to_chan_id[conn.topic]
                     type_map[conn.id] = ros2_type
 
-                # --- INJECTION LOGIC (Same as original) ---
+                # --- INJECTION LOGIC ---
                 if is_part_of_series and self.static_tf_cache and not self.exiter.stop_requested:
                     chan_id = 0
                     schema_id_to_use = 0
@@ -169,25 +169,34 @@ class BagSeriesConverter:
                 total_duration_sec = (end_ns - start_ns) / 1e9
                 last_ts = start_ns
 
-                with tqdm(
-                    total=total_duration_sec, 
-                    unit="s", 
-                    desc="Converting", 
-                    leave=False,
-                    bar_format="{l_bar}{bar}| {n:.2f}/{total:.2f}s [{elapsed}<{remaining}, {rate_fmt}]"
-                ) as pbar:
+                # --- FIX: Handle Empty/Instant Bags ---
+                # We explicitly print a warning so the batch processor can catch it.
+                if total_duration_sec <= 0.001:
+                    print(f"  [WARN] Bag duration is {total_duration_sec}s. Skipping progress bar.")
+                    # Use a dummy context manager to avoid tqdm crash
+                    context_manager = convert_utils.NoOpContextManager()
+                else:
+                    context_manager = tqdm(
+                        total=total_duration_sec, 
+                        unit="s", 
+                        desc="Converting", 
+                        leave=False,
+                        bar_format="{l_bar}{bar}| {n:.2f}/{total:.2f}s [{elapsed}<{remaining}, {rate_fmt}]"
+                    )
 
+                with context_manager as pbar:
                     for conn, timestamp, raw_data in reader.messages():
                         if self.exiter.stop_requested: break
                         if conn.id not in conn_map: continue
                         
-                        step = (timestamp - last_ts) / 1e9
-                        if step > 0:
-                            pbar.update(step)
-                            last_ts = timestamp
+                        # Safe update
+                        if hasattr(pbar, 'update'):
+                            step = (timestamp - last_ts) / 1e9
+                            if step > 0:
+                                pbar.update(step)
+                                last_ts = timestamp
                         
                         if writer.just_rotated:
-                            # ... rotation logic ...
                             if current_stats["start_time"] is None: current_stats["start_time"] = 0
                             if current_stats["end_time"] is None: current_stats["end_time"] = 0
                             current_stats["duration"] = current_stats["end_time"] - current_stats["start_time"]
@@ -206,75 +215,42 @@ class BagSeriesConverter:
                             ros1_msg = self.store_ros1.deserialize_ros1(raw_data, conn.msgtype)
                             ros2_msg = convert_utils.convert_ros1_to_ros2(ros1_msg, ros2_t, self.store_ros2)
                             
-                            # 1. RUN PLUGINS
                             emissions = self.plugin_manager.run_plugins(conn.topic, ros2_msg, ros2_t, timestamp)
                             
-                            # 2. ITERATE EMISSIONS (Unpacking 4 items now)
                             for (out_topic, out_msg, out_type, out_def) in emissions:
                                 if out_msg is None: continue
 
-                                # 3. LAZY REGISTRATION
                                 if out_topic not in topic_to_chan_id:
-                                    
                                     if out_type not in registered_schemas:
-                                        # A. Did Plugin provide definition?
                                         schema_text = out_def
-                                        
-                                        # B. If not, check Standard Dictionary
-                                        if schema_text is None:
-                                            schema_text = get_std_def(out_type)
-                                            
-                                        # C. Fallback (Warns user)
-                                        if schema_text is None:
-                                            schema_text = f"# Definition for {out_type} missing"
-                                            # tqdm.write(f"[WARN] No definition found for {out_type}")
+                                        if schema_text is None: schema_text = get_std_def(out_type)
+                                        if schema_text is None: schema_text = f"# Definition for {out_type} missing"
 
-                                        sid = writer.register_schema(
-                                            name=out_type, 
-                                            encoding=SchemaEncoding.ROS2, 
-                                            data=schema_text.encode('utf-8')
-                                        )
+                                        sid = writer.register_schema(name=out_type, encoding=SchemaEncoding.ROS2, data=schema_text.encode('utf-8'))
                                         registered_schemas[out_type] = sid
                                     
-                                    # Register Channel
-                                    cid = writer.register_channel(
-                                        topic=out_topic,
-                                        message_encoding=MessageEncoding.CDR,
-                                        schema_id=registered_schemas[out_type],
-                                        metadata={"offered_qos_profiles": ""}
-                                    )
+                                    cid = writer.register_channel(topic=out_topic, message_encoding=MessageEncoding.CDR, schema_id=registered_schemas[out_type], metadata={"offered_qos_profiles": ""})
                                     topic_to_chan_id[out_topic] = cid
                                     current_stats["topics"][out_topic] = {"count": 0, "type": out_type}
 
-                                # 4. SERIALIZE & WRITE
                                 cdr_bytes = self.store_ros2.serialize_cdr(out_msg, out_type)
 
-                                writer.add_message(
-                                    channel_id=topic_to_chan_id[out_topic],
-                                    log_time=int(timestamp),
-                                    publish_time=int(timestamp),
-                                    data=cdr_bytes
-                                )
+                                writer.add_message(channel_id=topic_to_chan_id[out_topic], log_time=int(timestamp), publish_time=int(timestamp), data=cdr_bytes)
 
-                                # Handle TF Cache
-                                if out_topic == convert_utils.TF_STATIC_TOPIC:
-                                    self.static_tf_cache.append(out_msg)
+                                if out_topic == convert_utils.TF_STATIC_TOPIC: self.static_tf_cache.append(out_msg)
 
-                                # Update Stats
                                 if out_topic in current_stats["topics"]:
                                     current_stats["topics"][out_topic]["count"] += 1
                                 else:
                                     current_stats["topics"][out_topic] = {"count": 1, "type": out_type}
                                 
-                                # Count primary messages for progress
-                                if out_topic == conn.topic:
-                                    current_stats["message_count"] += 1
+                                if out_topic == conn.topic: current_stats["message_count"] += 1
                                     
                                 if current_stats["start_time"] is None or timestamp < current_stats["start_time"]: current_stats["start_time"] = timestamp
                                 if current_stats["end_time"] is None or timestamp > current_stats["end_time"]: current_stats["end_time"] = timestamp
                         
                         except Exception as e:
-                            tqdm.write(f"[ERR] Conversion failed on topic {conn.topic} ({ros2_t}): {e}")
+                            print(f"[ERR] Conversion failed on topic {conn.topic}: {e}", file=sys.stderr)
 
                 print(f"  [SUCCESS] {current_stats.get('message_count', 0)} messages converted.")
 
@@ -334,7 +310,6 @@ def main():
             output_dir = None 
     
     if args.dry_run:
-        # ... (Dry run logic) ...
         print("Dry run finished.")
         sys.exit(0)
 

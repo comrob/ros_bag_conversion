@@ -1,5 +1,3 @@
-# Please note, taht each bagfile / series should be in its dedicated folder.
-
 import os
 import argparse
 import subprocess
@@ -8,7 +6,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-# --- Notification Utility (No pip dependencies) ---
+# --- Notification Utility ---
 def send_ntfy(topic, message, title="Batch Converter", priority="default", tags=None):
     if not topic:
         return
@@ -22,7 +20,6 @@ def send_ntfy(topic, message, title="Batch Converter", priority="default", tags=
         "Tags": ",".join(tags) if tags else ""
     }
     
-    # Add hostname context to message
     full_message = f"[{hostname}] {message}"
     
     try:
@@ -33,43 +30,41 @@ def send_ntfy(topic, message, title="Batch Converter", priority="default", tags=
             method='POST'
         )
         with urllib.request.urlopen(req) as response:
-            pass # Request sent
+            pass 
     except Exception as e:
         print(f"[WARN] Failed to send ntfy notification: {e}")
+
+def get_folder_bag_stats(folder_path):
+    """Calculates total size of bag files in folder."""
+    total_size = 0
+    bag_count = 0
+    for f in folder_path.glob("*.bag"):
+        total_size += f.stat().st_size
+        bag_count += 1
+    
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if total_size < 1024.0:
+            break
+        total_size /= 1024.0
+    return bag_count, f"{total_size:.2f} {unit}"
 
 # --- Core Logic ---
 def run_batch_conversion(src_root, dst_root, converter_cmd, ntfy_topic=None, dry_run=False, with_plugins=False):
     src_root = Path(src_root).resolve()
     dst_root = Path(dst_root).resolve()
     
-    # NOTE: We do NOT resolve converter_cmd because it is likely a command in PATH
-    
     if not src_root.exists():
         print(f"[Error] Source directory not found: {src_root}")
         return
 
-    # 1. Scan Phase
-    print("=" * 60)
-    print(f"BATCH CONVERSION START")
-    print(f"Source:  {src_root}")
-    print(f"Target:  {dst_root}")
-    print(f"Plugins: {with_plugins}")
-    print(f"Command: {converter_cmd}")
-    print(f"Ntfy:    {ntfy_topic if ntfy_topic else 'Disabled'}")
-    print("-" * 60)
-    print("Scanning for bag folders...")
-
     tasks = []
     for dirpath, dirnames, filenames in os.walk(src_root):
-        # Check if folder contains .bag files
         if any(f.endswith('.bag') for f in filenames):
             tasks.append(Path(dirpath))
 
     total_tasks = len(tasks)
     print(f"Found {total_tasks} folders to process.")
-    print("=" * 60)
 
-    # Notify Start
     if not dry_run:
         send_ntfy(ntfy_topic, f"Started batch conversion of {total_tasks} folders.", title="Batch Started", tags=["rocket"])
 
@@ -82,7 +77,6 @@ def run_batch_conversion(src_root, dst_root, converter_cmd, ntfy_topic=None, dry
         relative_path = current_input_path.relative_to(src_root)
         target_output_folder = dst_root / relative_path
         
-        # Define expected metadata file to check for completion
         is_done = (target_output_folder / "metadata.yaml").exists()
 
         if is_done:
@@ -107,23 +101,58 @@ def run_batch_conversion(src_root, dst_root, converter_cmd, ntfy_topic=None, dry
             success_count += 1 
         else:
             try:
-                # Create parent structure
                 target_output_folder.parent.mkdir(parents=True, exist_ok=True)
                 
                 t0 = time.time()
-                subprocess.run(cmd, check=True)
-                duration = time.time() - t0
                 
+                # Capture output to check for specific warnings
+                result = subprocess.run(
+                    cmd, 
+                    check=True, 
+                    capture_output=True, 
+                    text=True
+                )
+                
+                # Print stdout to console so we can see it live
+                if result.stdout: print(result.stdout, end='')
+                if result.stderr: print(result.stderr, end='')
+
+                duration = time.time() - t0
                 success_count += 1
                 
-                msg = f"Completed {index}/{total_tasks}: {relative_path} ({duration:.1f}s)"
-                send_ntfy(ntfy_topic, msg, title="Conversion Progress", priority="low", tags=["white_check_mark"])
-
+                # --- CHECK FOR "EMPTY BAG" WARNING ---
+                if "[WARN] Bag duration is" in result.stdout:
+                    bag_count, size_str = get_folder_bag_stats(current_input_path)
+                    
+                    warn_msg = (
+                        f"Processed Empty/Instant Bag: {relative_path}\n"
+                        f"Size: {size_str} ({bag_count} bags)"
+                    )
+                    # Send High priority Warning
+                    send_ntfy(ntfy_topic, warn_msg, title="Empty Bag Detected", priority="high", tags=["warning"])
+                
             except subprocess.CalledProcessError as e:
                 fail_count += 1
-                error_msg = f"Failed {relative_path}\nExit Code: {e.returncode}"
-                print(f"  [ERROR] {error_msg}")
-                send_ntfy(ntfy_topic, error_msg, title="Conversion Error", priority="high", tags=["warning", "x"])
+                
+                # Stats
+                bag_count, size_str = get_folder_bag_stats(current_input_path)
+                
+                # Extract error
+                err_lines = e.stderr.strip().split('\n')
+                last_err = err_lines[-1] if err_lines else "Unknown Error"
+                if len(err_lines) > 1:
+                     last_err = f"{err_lines[-2]}\n{err_lines[-1]}"
+
+                error_msg = (
+                    f"Failed: {relative_path}\n"
+                    f"Size: {size_str} ({bag_count} bags)\n"
+                    f"Error: {last_err}"
+                )
+                
+                print(f"  [ERROR] Exit Code: {e.returncode}")
+                print(e.stderr)
+                
+                send_ntfy(ntfy_topic, error_msg, title="Conversion Error", priority="high", tags=["x"])
                 
             except Exception as e:
                 fail_count += 1
@@ -131,7 +160,6 @@ def run_batch_conversion(src_root, dst_root, converter_cmd, ntfy_topic=None, dry
                 print(f"  [ERROR] {error_msg}")
                 send_ntfy(ntfy_topic, error_msg, title="Critical Failure", priority="urgent", tags=["skull"])
 
-    # Final Summary
     total_duration = time.time() - start_time
     summary = (
         f"Batch Finished in {total_duration/60:.1f} min.\n"
@@ -150,16 +178,13 @@ def run_batch_conversion(src_root, dst_root, converter_cmd, ntfy_topic=None, dry
         send_ntfy(ntfy_topic, summary, title="Batch Complete", priority="default", tags=[tag])
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Smart Batch Convert ROS1 -> MCAP with Notifications")
+    parser = argparse.ArgumentParser(description="Smart Batch Convert ROS1 -> MCAP")
     parser.add_argument("--input", required=True, help="Root folder containing ROS1 bag folders")
     parser.add_argument("--output", required=True, help="Root folder for MCAP output")
-    
-    # CHANGED: Default is now just the system command "convert_bag"
-    parser.add_argument("--converter", default="convert_bag", help="Command to run converter (default: convert_bag)")
-    
+    parser.add_argument("--converter", default="convert_bag", help="Command to run converter")
     parser.add_argument("--with-plugins", action="store_true", help="Enable plugins")
     parser.add_argument("--dry-run", action="store_true", help="Print commands without running")
-    parser.add_argument("--ntfy", default=None, help="ntfy.sh topic (e.g., 'my_secret_topic_123')")
+    parser.add_argument("--ntfy", default=None, help="ntfy.sh topic")
 
     args = parser.parse_args()
 
