@@ -35,9 +35,9 @@ class DebayerPlugin(BasePlugin):
             if success:
                 # Modify In-Place
                 msg.data = enc_buf.flatten()
-                msg.format = "jpeg; rgb8" 
+                msg.format = "bgr8; jpeg compressed bgr8 " 
                 
-                return default_emission, True 
+                return default_emission, True
 
         except Exception as e:
             print(f"[PLUGIN ERR] Debayer failed on {topic}: {e}")
