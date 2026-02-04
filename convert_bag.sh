@@ -26,6 +26,15 @@ for var in "$@"; do
     # Get absolute path of current arg
     ABS_PATH=$(realpath -m "$var")
     
+    # [FIX START] --------------------------------------------------------------
+    # Only allow ACTUAL FILES/DIRS to influence the mount point.
+    # This prevents strings (like topic names '/foo/bar') from triggering a 
+    # traverse up to the system root '/', which breaks path relativization.
+    if [ ! -e "$ABS_PATH" ]; then
+        continue
+    fi
+    # [FIX END] ----------------------------------------------------------------
+    
     # While the current arg is NOT inside the calculated MOUNT_HOST...
     # We move the MOUNT_HOST one level up (parent directory).
     while [[ "$ABS_PATH" != "$MOUNT_HOST"* ]]; do
@@ -56,7 +65,7 @@ for var in "$@"; do
             REL_PATH=$(realpath -m --relative-to="$MOUNT_HOST" "$ABS_VAR")
             PY_ARGS="$PY_ARGS $REL_PATH"
     else
-            # Fallback (should rarely happen with new logic)
+            # Fallback: Pass the string literally (This now preserves topics!)
             PY_ARGS="$PY_ARGS $var"
     fi
 done

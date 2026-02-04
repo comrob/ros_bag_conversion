@@ -120,6 +120,12 @@ def run_batch_conversion(src_root, dst_root, converter_cmd, ntfy_topic=None, **k
             if kwargs.get('with_plugins'): cmd.append("--with-plugins")
             if kwargs.get('split_size'): cmd.extend(["--split-size", kwargs['split_size']])
             if kwargs.get('distro'): cmd.extend(["--distro", kwargs['distro']])
+            
+            # [MODIFIED] Forward skip-topics list
+            if kwargs.get('skip_topics'):
+                cmd.append("--skip-topics")
+                cmd.extend(kwargs['skip_topics'])
+
             if dry_run: cmd.append("--dry-run")
             
             cmd.extend(["--out-dir", str(target_output_folder)])
@@ -204,6 +210,8 @@ if __name__ == "__main__":
     parser.add_argument("--split-size", default=None, help="Split output files by size")
     parser.add_argument("--distro", default="humble", help="ROS distro")
     parser.add_argument("--with-plugins", action="store_true", help="Enable plugins")
+    # [MODIFIED] Added skip-topics argument to batch parser
+    parser.add_argument("--skip-topics", nargs='+', default=[], help="List of topics to skip")
 
     args = parser.parse_args()
     

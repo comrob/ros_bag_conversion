@@ -21,8 +21,10 @@ from std_defs import get_std_def
 
 # --- Business Logic ---
 class BagSeriesConverter:
-    def __init__(self, ros_distro="humble", enable_plugins=False):
+    # [MODIFIED] Added skip_topics argument
+    def __init__(self, ros_distro="humble", enable_plugins=False, skip_topics: List[str] = None):
         self.ros_distro = ros_distro
+        self.skip_topics = set(skip_topics) if skip_topics else set()  # Store as set for speed
         self.static_tf_cache: List[Any] = []
         self.tf_static_def: Optional[str] = None 
         
@@ -76,6 +78,10 @@ class BagSeriesConverter:
                 for conn in reader.connections:
                     if self.exiter.stop_requested: break
                     
+                    # [MODIFIED] Check blacklist immediately
+                    if conn.topic in self.skip_topics:
+                        continue
+
                     ros1_type = conn.msgtype
                     ros2_type = convert_utils.to_ros2_type(ros1_type)
                     
@@ -139,34 +145,36 @@ class BagSeriesConverter:
 
                 # --- INJECTION LOGIC ---
                 if is_part_of_series and self.static_tf_cache and not self.exiter.stop_requested:
-                    chan_id = 0
-                    schema_id_to_use = 0
-                    if tf_type_name in registered_schemas:
-                        schema_id_to_use = registered_schemas[tf_type_name]
-                    elif self.tf_static_def:
-                        schema_id_to_use = writer.register_schema(name=tf_type_name, encoding=SchemaEncoding.ROS2, data=self.tf_static_def.encode('utf-8'))
-                        registered_schemas[tf_type_name] = schema_id_to_use
+                    # [MODIFIED] Ensure static TF injection respects skip list too
+                    if convert_utils.TF_STATIC_TOPIC not in self.skip_topics:
+                        chan_id = 0
+                        schema_id_to_use = 0
+                        if tf_type_name in registered_schemas:
+                            schema_id_to_use = registered_schemas[tf_type_name]
+                        elif self.tf_static_def:
+                            schema_id_to_use = writer.register_schema(name=tf_type_name, encoding=SchemaEncoding.ROS2, data=self.tf_static_def.encode('utf-8'))
+                            registered_schemas[tf_type_name] = schema_id_to_use
 
-                    if schema_id_to_use != 0:
-                        if convert_utils.TF_STATIC_TOPIC in topic_to_chan_id:
-                            chan_id = topic_to_chan_id[convert_utils.TF_STATIC_TOPIC]
-                        else:
-                            meta = {"offered_qos_profiles": convert_utils.TF_STATIC_QOS_POLICY}
-                            chan_id = writer.register_channel(topic=convert_utils.TF_STATIC_TOPIC, message_encoding=MessageEncoding.CDR, schema_id=schema_id_to_use, metadata=meta)
-                            topic_to_chan_id[convert_utils.TF_STATIC_TOPIC] = chan_id
-                            current_stats["topics"][convert_utils.TF_STATIC_TOPIC] = {"count": 0, "type": tf_type_name}
-                    
-                    if chan_id != 0:
-                        start_time = reader.start_time if reader.start_time else 0
-                        from rosbags.typesys.stores.ros2_humble import builtin_interfaces__msg__Time as Time
-                        for ros2_msg in self.static_tf_cache:
-                            if hasattr(ros2_msg, 'transforms'):
-                                for t in ros2_msg.transforms:
-                                    t.header.stamp = Time(sec=int(start_time/1e9), nanosec=int(start_time%1e9))
-                            cdr_bytes = self.store_ros2.serialize_cdr(ros2_msg, tf_type_name)
-                            writer.add_message(channel_id=chan_id, log_time=int(start_time), publish_time=int(start_time), data=cdr_bytes)
-                            current_stats["topics"][convert_utils.TF_STATIC_TOPIC]["count"] += 1
-                            current_stats["message_count"] += 1
+                        if schema_id_to_use != 0:
+                            if convert_utils.TF_STATIC_TOPIC in topic_to_chan_id:
+                                chan_id = topic_to_chan_id[convert_utils.TF_STATIC_TOPIC]
+                            else:
+                                meta = {"offered_qos_profiles": convert_utils.TF_STATIC_QOS_POLICY}
+                                chan_id = writer.register_channel(topic=convert_utils.TF_STATIC_TOPIC, message_encoding=MessageEncoding.CDR, schema_id=schema_id_to_use, metadata=meta)
+                                topic_to_chan_id[convert_utils.TF_STATIC_TOPIC] = chan_id
+                                current_stats["topics"][convert_utils.TF_STATIC_TOPIC] = {"count": 0, "type": tf_type_name}
+                        
+                        if chan_id != 0:
+                            start_time = reader.start_time if reader.start_time else 0
+                            from rosbags.typesys.stores.ros2_humble import builtin_interfaces__msg__Time as Time
+                            for ros2_msg in self.static_tf_cache:
+                                if hasattr(ros2_msg, 'transforms'):
+                                    for t in ros2_msg.transforms:
+                                        t.header.stamp = Time(sec=int(start_time/1e9), nanosec=int(start_time%1e9))
+                                cdr_bytes = self.store_ros2.serialize_cdr(ros2_msg, tf_type_name)
+                                writer.add_message(channel_id=chan_id, log_time=int(start_time), publish_time=int(start_time), data=cdr_bytes)
+                                current_stats["topics"][convert_utils.TF_STATIC_TOPIC]["count"] += 1
+                                current_stats["message_count"] += 1
 
                 # --- PASS 2: CONVERSION ---
                 start_ns = reader.start_time or 0
@@ -215,6 +223,9 @@ class BagSeriesConverter:
                             
                             for (out_topic, out_msg, out_type, out_def) in emissions:
                                 if out_msg is None: continue
+                                
+                                # [MODIFIED] Check blacklist for plugin emissions
+                                if out_topic in self.skip_topics: continue
 
                                 if out_topic not in topic_to_chan_id:
                                     if out_type not in registered_schemas:
@@ -288,8 +299,21 @@ def main():
     parser.add_argument("--split-size", default=None, help="Split output files by size (e.g., 3G, 500M)")
     parser.add_argument("--with-plugins", action="store_true", help="Enable custom processing plugins from plugins.yaml")
     parser.add_argument("--dry-run", action="store_true", help="Validate paths and config without running conversion")
+    # [MODIFIED] Added argument for skipping topics
+    parser.add_argument("--skip-topics", nargs='+', default=[], help="List of topics to skip (blacklist)")
 
     args = parser.parse_args()
+    
+    
+    # print arguments for verification
+    print(f"Input Paths: {args.inputs}")
+    print(f"Series Mode: {args.series}")
+    print(f"ROS Distro: {args.distro}")
+    print(f"Output Directory: {args.out_dir}")
+    print(f"Split Size: {args.split_size}")
+    print(f"Enable Plugins: {args.with_plugins}")
+    print(f"Dry Run: {args.dry_run}")
+    print(f"Topics to Skip: {args.skip_topics}")
     
     try:
         split_bytes = mcap_writer_utils.parse_size(args.split_size)
@@ -334,7 +358,8 @@ def main():
         output_dir.mkdir(parents=True, exist_ok=True)
         print(f"[INFO] Output Directory: {output_dir}")
     
-    converter = BagSeriesConverter(ros_distro=args.distro, enable_plugins=args.with_plugins)
+    # [MODIFIED] Passed skip_topics to converter
+    converter = BagSeriesConverter(ros_distro=args.distro, enable_plugins=args.with_plugins, skip_topics=args.skip_topics)
     valid_stats = []
 
     all_topic_errors = {}
