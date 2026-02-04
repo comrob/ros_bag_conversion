@@ -19,12 +19,11 @@ We provide a demo script that **automatically downloads test bagfiles** and runs
 ```bash
 bash ./install.sh
 
-# Basic conversion
+# Basic conversion (Single File)
 convert_bag /path/to/single_ros1.bag
 
-# Series conversion (auto-split detection)
+# Series conversion (Folder Input)
 convert_bag /path/to/ros1_bag_folder --series
-convert_bag /path/to/split_0.bag /path/to/split_1.bag --series
 
 ```
 
@@ -80,12 +79,11 @@ convert_bag /path/to/recording.bag
 
 Use the `--series` flag when processing split bag files (e.g., `_0.bag`, `_1.bag`). This mode enables **Static TF Injection** (ensuring all parts have TF data) and generates `metadata.yaml` for seamless playback.
 
-```bash
-# Option A: Process all bags in a folder
-convert_bag /path/to/data_folder --series
+**Note:** You must pass the **folder** containing the sequence, not individual files.
 
-# Option B: Process specific list of files
-convert_bag /path/to/data/bag_0.bag /path/to/data/bag_1.bag --series
+```bash
+# Process all bags in a folder
+convert_bag /path/to/data_folder --series
 
 ```
 
@@ -171,6 +169,7 @@ The script accepts optional arguments passed directly to the internal Python con
 * `--out-dir <path>`: Forces a specific output directory.
 * `--with-plugins`: Enables the plugin system (reads `src/plugins.yaml`).
 * `--dry-run`: Validates input files, write permissions, and configuration without processing data.
+* `--skip-topics <topic1> <topic2> ...`: A list of topics to exclude from the conversion (blacklist).
 
 <details>
 <summary><strong>Feature: Auto-Generating ROS 2 Message Definitions</strong> (Click to Expand)</summary>
@@ -263,6 +262,7 @@ If your host supports X11 forwarding, you can run GUI tools (`rviz`) directly.
 
 * [x] **Auto-splitting:** Series conversion with static TF injection is implemented.
 * [x] **Plugin System V2:** Parametric configuration, 1-to-N message expansion, and timestamp injection.
+* [x] **Topic Filtering:** Added `--skip-topics` argument to blacklist unwanted data.
 * [x] **Automated Image Publishing:** CI/CD scripts (`publish-image.sh`) are in place.
 * [x] **Pre-Flight Checks:** Implement a `--dry-run` mode to validate paths and disk space.
 * [x] **UX:** Added `tqdm` progress bars and detailed summary reports.

@@ -109,35 +109,16 @@ else
 fi
 
 # ==============================================================================
-# STEP 4: TEST CASE: Partial Sequence
+# STEP 4: TEST CASE: Full Folder Conversion (Replaces old Sequence test)
 # ==============================================================================
-print_header "STEP 4: Testing Sequence (test_1 + test_2)"
-
-OUT_SEQ="$OUTPUT_DIR/case2_sequence"
-echo "[INFO] Target Output: $OUT_SEQ"
-rm -rf "$OUT_SEQ"
-
-set -x
-$CONVERTER_SCRIPT "$INPUT_SEQ/test_1.bag" "$INPUT_SEQ/test_2.bag" --series --out-dir "$OUT_SEQ"
-set +x
-
-if [ -f "$OUT_SEQ/test_1.mcap" ] && [ -f "$OUT_SEQ/test_2.mcap" ]; then
-    echo "✅ Case 2 successful."
-else
-    echo "❌ Failed."
-    exit 1
-fi
-
-# ==============================================================================
-# STEP 5: TEST CASE: Full Folder Conversion
-# ==============================================================================
-print_header "STEP 5: Testing Folder Input"
+print_header "STEP 4: Testing Folder Input (Series Mode)"
 
 OUT_FOLDER="$OUTPUT_DIR/case3_folder"
 echo "[INFO] Target Output: $OUT_FOLDER"
 rm -rf "$OUT_FOLDER"
 
 set -x
+# We pass the FOLDER, not the individual files. This works with the Simple script.
 $CONVERTER_SCRIPT "$INPUT_SEQ" --series --out-dir "$OUT_FOLDER"
 set +x
 
@@ -149,9 +130,9 @@ else
 fi
 
 # ==============================================================================
-# STEP 6: TEST CASE: Splitting by Size
+# STEP 5: TEST CASE: Splitting by Size
 # ==============================================================================
-print_header "STEP 6: Testing Split (Limit 50MB)"
+print_header "STEP 5: Testing Split (Limit 50MB)"
 
 OUT_SPLIT="$OUTPUT_DIR/case4_split"
 echo "[INFO] Target Output: $OUT_SPLIT"
@@ -169,9 +150,9 @@ else
 fi
 
 # ==============================================================================
-# STEP 7: TEST CASE: Plugin Functionality (Debayer)
+# STEP 6: TEST CASE: Plugin Functionality (Debayer)
 # ==============================================================================
-print_header "STEP 7: Testing Plugins (Debayer)"
+print_header "STEP 6: Testing Plugins (Debayer)"
 
 OUT_PLUGIN="$OUTPUT_DIR/case5_plugin"
 echo "[INFO] Target Output: $OUT_PLUGIN"
@@ -189,9 +170,9 @@ else
 fi
 
 # ==============================================================================
-# STEP 9: TEST CASE: Dry Run
+# STEP 7: TEST CASE: Dry Run
 # ==============================================================================
-print_header "STEP 9: Testing Dry Run Mode"
+print_header "STEP 7: Testing Dry Run Mode"
 OUT_DRY="$OUTPUT_DIR/case6_dryrun"
 
 # We run with --dry-run. This should NOT produce files, but should exit with 0.
@@ -202,9 +183,6 @@ set +x
 if [ ! -d "$OUT_DRY" ]; then
     echo "✅ Success: Dry run finished without creating output folders/files."
 else
-    # It might create the folder if the script pre-creates it?
-    # Actually convert.py creates output_dir AFTER dry run check.
-    # So the folder should NOT exist.
     if [ -z "$(ls -A $OUT_DRY 2>/dev/null)" ]; then
          echo "✅ Success: Output folder is empty or non-existent."
     else
